@@ -1,0 +1,44 @@
+# Default config — copy to ~/.config/eyeblink-monitor/config.toml and tune.
+
+[detection]
+# EAR (Eye Aspect Ratio) threshold below which the eye is considered closed.
+# Lower this if blinks are not detected, raise if too many false positives.
+ear_threshold = 0.21
+
+# Number of consecutive frames below threshold required to count as a blink.
+# Filters out single-frame noise.
+consecutive_frames = 2
+
+# Webcam device index (usually 0).
+camera_index = 0
+
+# Target capture FPS (the actual FPS depends on the camera).
+fps = 30
+
+[alert]
+# Seconds without a blink before NoBlinkWarning is emitted.
+warning_seconds = 5
+
+[display]
+# Show OpenCV preview window with debug overlay.
+show_preview = false
+
+[dbus]
+# Bus name and object path. Change only if you know what you're doing.
+bus_name = "org.eyeblink.Monitor"
+object_path = "/org/eyeblink/Monitor"
+
+[nudge]
+# "all"     -> dim every monitor with a fullscreen click-through overlay.
+# "focused" -> dim only the currently focused Hyprland window (tracks focus).
+scope = "all"
+
+# Peak opacity of the black overlay (0..1). 0.35 is noticeable but not blinding.
+target_dim = 0.35
+
+# Fade-in / fade-out duration in milliseconds.
+fade_ms = 800
+
+# Escalation: ramp dim further if you still haven't blinked.
+# Each entry is [seconds_since_last_blink, dim_level].
+escalation = [[18, 0.80]]

@@ -1,0 +1,25 @@
+[project]
+name = "eyeblink-monitor"
+version = "0.1.0"
+description = "Webcam-based blink monitor exposing D-Bus signals when blinks stop."
+requires-python = ">=3.11"
+dependencies = [
+    "opencv-python>=4.10",
+    "mediapipe>=0.10.14",
+    "numpy>=1.26,<2.0",
+    "dasbus>=1.7",
+    "PyGObject>=3.48",
+]
+
+[project.scripts]
+eyeblink-monitor = "cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# Ship each module under src/ as a top-level module (cli, config, ...),
+# so `from cli import main` and `python -m cli` both work.
+[tool.hatch.build.targets.wheel]
+only-include = ["src"]
+sources = ["src"]
