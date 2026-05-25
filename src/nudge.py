@@ -12,6 +12,7 @@ No subprocesses, no GTK, no layer-shell, no overlay windows.
 
 from __future__ import annotations
 
+import os
 import tempfile
 import threading
 from pathlib import Path
@@ -64,6 +65,7 @@ class NudgeController:
         self._fade_from = 0.0
         self._fade_to = 0.0
         self._fade_step = 0
+        self._fade_generation = 0
 
         # Animation state (focused mode).
         self._anim_source: int | None = None
@@ -86,20 +88,17 @@ class NudgeController:
 
     def activate(self, level: float | None = None) -> None:
         target = max(0.0, min(1.0, level)) if level is not None else self._target
-        # Skip if already fading to this target.
-        if abs(self._fade_to - target) < 0.001 and self._fade_timer is not None:
-            return
         if self._scope == "all":
-            self._start_stepped_fade(target)
+            GLib.idle_add(self._request_stepped_fade, target)
         else:
             GLib.idle_add(self._start_fade, target)
 
     def deactivate(self) -> None:
-        if self._current_level < 0.001 and self._fade_timer is None:
-            return
         if self._scope == "all":
-            self._start_stepped_fade(0.0)
+            GLib.idle_add(self._request_stepped_fade, 0.0)
         else:
+            if self._current_level < 0.001 and self._fade_timer is None:
+                return
             GLib.idle_add(self._start_fade, 0.0)
 
     def cleanup(self) -> None:
@@ -117,18 +116,31 @@ class NudgeController:
 
     # -------------------------------------------------- all mode (stepped fade)
 
+    def _request_stepped_fade(self, to: float) -> bool:
+        if abs(self._fade_to - to) < 0.001 and self._fade_timer is not None:
+            return False
+        if to < 0.001 and self._current_level < 0.001 and self._fade_timer is None:
+            if not self._shader_active:
+                return False
+        self._start_stepped_fade(to)
+        return False
+
     def _start_stepped_fade(self, to: float) -> None:
         if self._fade_timer is not None:
             GLib.source_remove(self._fade_timer)
             self._fade_timer = None
 
+        self._fade_generation += 1
         self._fade_from = self._current_level
         self._fade_to = to
         self._fade_step = 0
         self._active = True
-        self._stepped_tick()
+        self._stepped_tick(self._fade_generation)
 
-    def _stepped_tick(self) -> None:
+    def _stepped_tick(self, generation: int) -> None:
+        if generation != self._fade_generation:
+            return
+
         self._fade_step += 1
         t = min(1.0, self._fade_step / _FADE_STEPS)
         eased = _smoothstep(t)
@@ -143,11 +155,11 @@ class NudgeController:
                 self._apply_shader(0.0)
             return
 
-        interval_ms = self._fade_ms // _FADE_STEPS
-        self._fade_timer = GLib.timeout_add(interval_ms, self._stepped_tick_cb)
+        interval_ms = max(1, self._fade_ms // _FADE_STEPS)
+        self._fade_timer = GLib.timeout_add(interval_ms, self._stepped_tick_cb, generation)
 
-    def _stepped_tick_cb(self) -> bool:
-        self._stepped_tick()
+    def _stepped_tick_cb(self, generation: int) -> bool:
+        self._stepped_tick(generation)
         return False
 
     def _apply_shader(self, level: float) -> None:
@@ -159,9 +171,17 @@ class NudgeController:
             return
         factor = 1.0 - level
         shader_src = _DIM_SHADER_TEMPLATE.format(factor=factor)
-        self._shader_path.write_text(shader_src)
+        self._write_shader_atomic(shader_src)
         keyword("decoration:screen_shader", str(self._shader_path))
         self._shader_active = True
+
+    def _write_shader_atomic(self, shader_src: str) -> None:
+        tmp_path = self._shader_path.with_name(self._shader_path.name + ".tmp")
+        with tmp_path.open("w", encoding="utf-8") as fh:
+            fh.write(shader_src)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, self._shader_path)
 
     # ----------------------------------------------------- focused mode (animated)
 

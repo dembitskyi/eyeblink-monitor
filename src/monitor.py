@@ -44,7 +44,20 @@ class BlinkMonitor:
         warning_started = False
         warning_cleared = False
 
-        if face_detected and ear < self._threshold:
+        # No face → reset timer so we don't dim when nobody is present.
+        if not face_detected:
+            self._closed_frames = 0
+            self._last_blink_ts = now
+            if self._warning_active:
+                self._warning_active = False
+                warning_cleared = True
+            self.state.ear = ear
+            self.state.face_detected = False
+            self.state.seconds_since_last_blink = 0.0
+            self.state.warning_active = False
+            return blinked, warning_started, warning_cleared
+
+        if ear < self._threshold:
             self._closed_frames += 1
         else:
             if self._closed_frames >= self._required_frames:

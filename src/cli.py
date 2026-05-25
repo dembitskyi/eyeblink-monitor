@@ -9,9 +9,11 @@ Threading model:
 from __future__ import annotations
 
 import argparse
+import logging
 import signal
 import sys
 import threading
+import time
 from pathlib import Path
 
 import cv2
@@ -20,8 +22,12 @@ import numpy as np
 from config import Config, load_config
 from dbus_service import DBusService
 from detector import EyeDetector
+from hypr import HyprEventListener
 from monitor import BlinkMonitor
 from nudge import NudgeController
+from session import SessionLockListener
+
+log = logging.getLogger("eyeblink")
 
 
 def _parse_args() -> argparse.Namespace:
@@ -131,16 +137,18 @@ def _draw_overlay(
 def _capture_loop(
     cfg: Config,
     stop_flag: threading.Event,
+    locked: threading.Event,
     service: DBusService,
     nudge: NudgeController | None,
     preview=None,
 ) -> None:
     cap = cv2.VideoCapture(cfg.detection.camera_index)
     if not cap.isOpened():
-        print(f"error: cannot open camera index {cfg.detection.camera_index}", file=sys.stderr)
+        log.error("cannot open camera index %d", cfg.detection.camera_index)
         stop_flag.set()
         return
     cap.set(cv2.CAP_PROP_FPS, cfg.detection.fps)
+    log.info("camera %d opened", cfg.detection.camera_index)
 
     detector = EyeDetector()
     monitor = BlinkMonitor(
@@ -150,19 +158,69 @@ def _capture_loop(
     )
 
     # Build sorted escalation thresholds: [(seconds, level), ...].
-    # The base warning is always the first level.
     escalation = sorted(
         [(cfg.alert.warning_seconds, cfg.nudge.target_dim)]
         + [(int(s), float(l)) for s, l in cfg.nudge.escalation],
         key=lambda x: x[0],
     )
     current_escalation_idx = -1
+    fail_count = 0
+    camera_paused = False
 
     try:
         while not stop_flag.is_set():
+            # Hyprland lock event (if available).
+            if locked.is_set():
+                if not camera_paused:
+                    log.info("screen locked, releasing camera")
+                    camera_paused = True
+                    if nudge is not None:
+                        nudge.deactivate()
+                        current_escalation_idx = -1
+                    monitor.reset_timer()
+                    cap.release()
+                time.sleep(0.5)
+                continue
+
+            # Resume from lock.
+            if camera_paused and not locked.is_set():
+                log.info("screen unlocked, reopening camera")
+                time.sleep(1.0)
+                cap = cv2.VideoCapture(cfg.detection.camera_index)
+                cap.set(cv2.CAP_PROP_FPS, cfg.detection.fps)
+                monitor.reset_timer()
+                camera_paused = False
+                fail_count = 0
+                if not cap.isOpened():
+                    log.warning("camera reopen failed, retrying in 2s")
+                    time.sleep(2.0)
+                    continue
+                log.info("camera reopened")
+                continue
+
             ok, frame_bgr = cap.read()
             if not ok:
+                fail_count += 1
+                if fail_count == 1:
+                    log.warning("camera read failed, waiting for recovery")
+                    if nudge is not None:
+                        nudge.deactivate()
+                        current_escalation_idx = -1
+                    monitor.reset_timer()
+                # After 5 consecutive failures (~5s of timeouts), reopen.
+                if fail_count >= 5:
+                    log.info("camera unresponsive (%d failures), reopening", fail_count)
+                    cap.release()
+                    time.sleep(2.0)
+                    cap = cv2.VideoCapture(cfg.detection.camera_index)
+                    cap.set(cv2.CAP_PROP_FPS, cfg.detection.fps)
+                    fail_count = 0
+                    if cap.isOpened():
+                        log.info("camera reopened successfully")
+                    else:
+                        log.warning("camera reopen failed, retrying in 2s")
                 continue
+            fail_count = 0
 
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
             result = detector.process(frame_rgb)
@@ -220,6 +278,12 @@ def _capture_loop(
 
 
 def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
     args = _parse_args()
     cfg = load_config(args.config)
     _apply_overrides(cfg, args)
@@ -245,23 +309,40 @@ def main() -> int:
         preview = PreviewWindow(on_close=lambda: stop_flag.set())
 
     stop_flag = threading.Event()
+    locked = threading.Event()
+
+    # Listen for logind session Lock/Unlock (triggered by loginctl lock-session).
+    session_listener = SessionLockListener(
+        on_lock=locked.set,
+        on_unlock=locked.clear,
+    )
+    session_listener.start()
+
+    # Also listen for Hyprland lock/unlock events (backup for hyprlock users).
+    hypr_listener = HyprEventListener(
+        on_lock=lambda: (locked.set(), log.info("hyprland lockscreen event")),
+        on_unlock=lambda: (locked.clear(), log.info("hyprland unlockscreen event")),
+    )
+    hypr_listener.start()
 
     def _handle_signal(_signum, _frame):
         stop_flag.set()
+        locked.clear()
 
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
-    print(
-        f"eyeblink-monitor running. "
-        f"threshold={cfg.alert.warning_seconds}s  ear<{cfg.detection.ear_threshold}  "
-        f"dim={'off' if args.no_dim else cfg.nudge.scope}",
-        flush=True,
+    log.info(
+        "started: threshold=%ds ear<%.2f dim=%s camera=%d",
+        cfg.alert.warning_seconds,
+        cfg.detection.ear_threshold,
+        "off" if args.no_dim else cfg.nudge.scope,
+        cfg.detection.camera_index,
     )
 
     capture_thread = threading.Thread(
         target=_capture_loop,
-        args=(cfg, stop_flag, service, nudge, preview),
+        args=(cfg, stop_flag, locked, service, nudge, preview),
         name="capture",
         daemon=True,
     )
@@ -278,20 +359,22 @@ def main() -> int:
     GLib.timeout_add(200, _check_stop)
 
     if preview is not None:
-        # GTK main loop drives GLib MainContext (services D-Bus + nudge timers).
         try:
             preview.run()
         finally:
             stop_flag.set()
+            locked.clear()
+            hypr_listener.stop()
             if nudge is not None:
                 nudge.cleanup()
             capture_thread.join(timeout=2.0)
     else:
-        # Pure GLib loop — no GUI, just D-Bus + nudge timers.
         try:
             service.run()
         finally:
             stop_flag.set()
+            locked.clear()
+            hypr_listener.stop()
             if nudge is not None:
                 nudge.cleanup()
             capture_thread.join(timeout=2.0)

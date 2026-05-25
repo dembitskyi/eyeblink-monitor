@@ -88,10 +88,10 @@ def get_active_window() -> WindowGeometry | None:
 
 
 class HyprEventListener:
-    """Subscribes to Hyprland's .socket2.sock and calls back on focus changes."""
+    """Subscribes to Hyprland's .socket2.sock and dispatches events."""
 
     # Events that may change the focused window's geometry/identity.
-    _RELEVANT = {
+    _FOCUS_EVENTS = {
         "activewindow",
         "activewindowv2",
         "movewindow",
@@ -106,8 +106,15 @@ class HyprEventListener:
         "configreloaded",
     }
 
-    def __init__(self, on_change: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        on_change: Callable[[], None] | None = None,
+        on_lock: Callable[[], None] | None = None,
+        on_unlock: Callable[[], None] | None = None,
+    ) -> None:
         self._on_change = on_change
+        self._on_lock = on_lock
+        self._on_unlock = on_unlock
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="hypr-events", daemon=True)
 
@@ -135,11 +142,17 @@ class HyprEventListener:
                     while b"\n" in buf:
                         line, buf = buf.split(b"\n", 1)
                         name = line.split(b">>", 1)[0].decode(errors="ignore")
-                        if name in self._RELEVANT:
-                            try:
-                                self._on_change()
-                            except Exception:
-                                pass
+                        self._dispatch(name)
         except Exception:
-            # Listener dies silently; nudge will fall back to a static overlay.
+            pass
+
+    def _dispatch(self, event: str) -> None:
+        try:
+            if event in self._FOCUS_EVENTS and self._on_change:
+                self._on_change()
+            elif event == "lockscreen" and self._on_lock:
+                self._on_lock()
+            elif event == "unlockscreen" and self._on_unlock:
+                self._on_unlock()
+        except Exception:
             pass
