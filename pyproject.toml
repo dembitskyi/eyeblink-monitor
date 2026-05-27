@@ -5,7 +5,8 @@ description = "Webcam-based blink monitor exposing D-Bus signals when blinks sto
 requires-python = ">=3.11"
 dependencies = [
     "opencv-python>=4.10",
-    "mediapipe>=0.10.14",
+    "mediapipe>=0.10.14,<=0.10.18; platform_machine == 'aarch64'",
+    "mediapipe>=0.10.14; platform_machine != 'aarch64'",
     "numpy>=1.26,<2.0",
     "dasbus>=1.7",
     "PyGObject>=3.48",
