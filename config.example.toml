@@ -15,6 +15,11 @@ camera_index = 0
 # Target capture FPS (the actual FPS depends on the camera).
 fps = 30
 
+# Try the MediaPipe GPU delegate (TFLite over OpenGL ES via EGL). If GPU init
+# fails — no NVIDIA/EGL drivers, headless session, unsupported platform such
+# as aarch64 Linux — the detector logs a warning and falls back to CPU.
+prefer_gpu = true
+
 [alert]
 # Seconds without a blink before NoBlinkWarning is emitted.
 warning_seconds = 5

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 import urllib.request
@@ -12,6 +13,8 @@ import mediapipe as mp
 import numpy as np
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
+
+log = logging.getLogger("eyeblink.detector")
 
 # 6-point EAR scheme (Soukupová & Čech, 2016).
 # Index ordering: [outer corner, top-1, top-2, inner corner, bottom-2, bottom-1].
@@ -47,6 +50,26 @@ class DetectionResult:
     right_eye_pts: np.ndarray | None
 
 
+def _make_options(
+    model_path: Path,
+    delegate: mp_python.BaseOptions.Delegate,
+) -> mp_vision.FaceLandmarkerOptions:
+    # output_face_blendshapes / output_facial_transformation_matrixes are
+    # False by default, but setting them explicitly avoids instantiating
+    # the FaceBlendshapesGraph (which hardcodes XNNPACK CPU and spawns an
+    # ncpu-sized threadpool) when MediaPipe's graph builder honours the flag.
+    return mp_vision.FaceLandmarkerOptions(
+        base_options=mp_python.BaseOptions(
+            model_asset_path=str(model_path),
+            delegate=delegate,
+        ),
+        running_mode=mp_vision.RunningMode.VIDEO,
+        num_faces=1,
+        output_face_blendshapes=False,
+        output_facial_transformation_matrixes=False,
+    )
+
+
 def _eye_aspect_ratio(pts: np.ndarray) -> float:
     v1 = np.linalg.norm(pts[1] - pts[5])
     v2 = np.linalg.norm(pts[2] - pts[4])
@@ -57,15 +80,44 @@ def _eye_aspect_ratio(pts: np.ndarray) -> float:
 
 
 class EyeDetector:
-    def __init__(self, model_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        model_path: Path | None = None,
+        *,
+        prefer_gpu: bool = True,
+    ) -> None:
         path = model_path or _ensure_model()
-        options = mp_vision.FaceLandmarkerOptions(
-            base_options=mp_python.BaseOptions(model_asset_path=str(path)),
-            running_mode=mp_vision.RunningMode.VIDEO,
-            num_faces=1,
-        )
-        self._landmarker = mp_vision.FaceLandmarker.create_from_options(options)
+        self._landmarker = self._build_landmarker(path, prefer_gpu=prefer_gpu)
         self._start = time.monotonic()
+
+    @staticmethod
+    def _build_landmarker(
+        model_path: Path, *, prefer_gpu: bool
+    ) -> mp_vision.FaceLandmarker:
+        # MediaPipe's GPU delegate uses TFLite over OpenGL ES via EGL, which
+        # fails to initialise on headless boxes, in containers without EGL
+        # libs, and on platforms MediaPipe doesn't ship GPU support for
+        # (Windows, aarch64 Linux). Try GPU first; fall back to CPU on any
+        # construction error so the detector still starts up.
+        if prefer_gpu:
+            try:
+                landmarker = mp_vision.FaceLandmarker.create_from_options(
+                    _make_options(model_path, mp_python.BaseOptions.Delegate.GPU)
+                )
+                log.info("FaceLandmarker initialised with GPU delegate")
+                return landmarker
+            except Exception as exc:
+                log.warning(
+                    "GPU delegate unavailable (%s: %s); falling back to CPU",
+                    type(exc).__name__,
+                    exc,
+                )
+
+        landmarker = mp_vision.FaceLandmarker.create_from_options(
+            _make_options(model_path, mp_python.BaseOptions.Delegate.CPU)
+        )
+        log.info("FaceLandmarker initialised with CPU delegate")
+        return landmarker
 
     def close(self) -> None:
         self._landmarker.close()

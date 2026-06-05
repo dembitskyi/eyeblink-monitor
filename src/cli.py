@@ -8,6 +8,17 @@ Threading model:
 
 from __future__ import annotations
 
+import os
+
+# Cap auxiliary threadpools BEFORE numpy / cv2 / mediapipe import — those
+# libraries snapshot the env at first import and create ncpu-sized pools by
+# default, which on a 16+ core box drowns the per-frame work in context
+# switches. setdefault lets the user override via the shell.
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+
 import argparse
 import logging
 import signal
@@ -18,6 +29,8 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+
+cv2.setNumThreads(1)
 
 from config import Config, load_config
 from dbus_service import DBusService
@@ -86,6 +99,11 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Fade in/out duration in milliseconds (default: 800).",
     )
+    p.add_argument(
+        "--no-gpu",
+        action="store_true",
+        help="Disable the MediaPipe GPU delegate and run inference on CPU only.",
+    )
     return p.parse_args()
 
 
@@ -104,6 +122,8 @@ def _apply_overrides(cfg: Config, args: argparse.Namespace) -> None:
         cfg.nudge.target_dim = args.target_dim
     if args.fade_ms is not None:
         cfg.nudge.fade_ms = args.fade_ms
+    if args.no_gpu:
+        cfg.detection.prefer_gpu = False
 
 
 def _draw_overlay(
@@ -150,7 +170,7 @@ def _capture_loop(
     cap.set(cv2.CAP_PROP_FPS, cfg.detection.fps)
     log.info("camera %d opened", cfg.detection.camera_index)
 
-    detector = EyeDetector()
+    detector = EyeDetector(prefer_gpu=cfg.detection.prefer_gpu)
     monitor = BlinkMonitor(
         ear_threshold=cfg.detection.ear_threshold,
         consecutive_frames=cfg.detection.consecutive_frames,

@@ -14,6 +14,8 @@ class DetectionConfig:
     consecutive_frames: int = 2
     camera_index: int = 0
     fps: int = 30
+    # Try the MediaPipe GPU delegate first; fall back to CPU if unavailable.
+    prefer_gpu: bool = True
 
 
 @dataclass
