@@ -24,3 +24,68 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 only-include = ["src"]
 sources = ["src"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pytest>=8.0",
+    "pre-commit>=3.8",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors.
+    "W",     # pycodestyle warnings.
+    "F",     # pyflakes.
+    "I",     # isort.
+    "B",     # flake8-bugbear.
+    "UP",    # pyupgrade.
+    "C4",    # flake8-comprehensions.
+    "SIM",   # flake8-simplify.
+    "RUF",   # ruff-specific rules.
+    "ASYNC", # flake8-async.
+    "LOG",   # flake8-logging.
+    "G",     # flake8-logging-format.
+    "PERF",  # perflint.
+    "RET",   # flake8-return.
+    "PIE",   # flake8-pie.
+    "RSE",   # flake8-raise.
+    "PTH",   # flake8-use-pathlib.
+    "TRY",   # tryceratops.
+    "FBT",   # flake8-boolean-trap.
+]
+ignore = [
+    "TRY003", # Contextual messages in raise(...) are intentional and readable.
+    # flake8-boolean-trap: the detection/GLib/cv2/mediapipe call sites pass
+    # positional booleans into C-extension APIs that don't accept keywords, so
+    # enforcing this on the existing signatures adds churn without value.
+    "FBT",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# The CLI sets threadpool env vars before importing numpy/cv2/mediapipe, so its
+# imports are intentionally not at the top of the file.
+"src/cli.py" = ["E402"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.mypy]
+python_version = "3.11"
+# The detection stack (opencv/mediapipe) ships no type stubs, so this is a
+# pragmatic (non-strict) config: catch real errors, ignore missing imports.
+ignore_missing_imports = true
+files = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+# The detection modules import opencv/mediapipe, so tests cover the pure logic
+# (settings schema/validation/persistence) rather than the capture pipeline.
+

@@ -1,0 +1,20 @@
+# Python.
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Tooling caches.
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.venv/
+.coverage
+
+# Nix.
+result
+result-*
+
+# Local state.
+*.db

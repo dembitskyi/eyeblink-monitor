@@ -53,6 +53,32 @@ dbus-monitor --session "interface='org.eyeblink.Monitor1'"
 
 Signals: `Blinked()`, `NoBlinkWarning(u seconds)`, `BlinkResumed()`.
 
+## Live tuning (os-settings)
+
+eyeblink-monitor also implements the generic `org.os_settings.Configurable1`
+interface at `/org/os_settings/eyeblink`, so every knob (pause, no-blink period,
+EAR threshold, dim level/scope, camera index, …) can be tuned **live** — no
+restart — from [os-settings](https://github.com/dembitskyi/os-settings) or any
+standard D-Bus tool. Changes persist to
+`$XDG_STATE_HOME/eyeblink-monitor/prefs.json` (survives a read-only Nix config).
+
+```sh
+# The interface describes itself (JSON schema of every setting):
+busctl --user call org.eyeblink.Monitor /org/os_settings/eyeblink \
+  org.os_settings.Configurable1 Describe
+
+# Read/write settings via the standard Properties interface:
+busctl --user get-property org.eyeblink.Monitor /org/os_settings/eyeblink \
+  org.os_settings.Configurable1 WarningSeconds
+busctl --user set-property org.eyeblink.Monitor /org/os_settings/eyeblink \
+  org.os_settings.Configurable1 Paused b true
+```
+
+The Home-Manager module installs a discovery manifest to
+`~/.local/share/os-settings/modules/eyeblink.json`, which is what makes the
+module appear as a tab in os-settings automatically.
+
+
 ## Config
 
 See [`config.example.toml`](config.example.toml) for all options.

@@ -12,9 +12,10 @@ import json
 import os
 import socket
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import ClassVar
 
 
 def _hypr_dir() -> Path:
@@ -91,7 +92,7 @@ class HyprEventListener:
     """Subscribes to Hyprland's .socket2.sock and dispatches events."""
 
     # Events that may change the focused window's geometry/identity.
-    _FOCUS_EVENTS = {
+    _FOCUS_EVENTS: ClassVar[set[str]] = {
         "activewindow",
         "activewindowv2",
         "movewindow",
@@ -134,7 +135,7 @@ class HyprEventListener:
                 while not self._stop.is_set():
                     try:
                         chunk = s.recv(4096)
-                    except socket.timeout:
+                    except TimeoutError:
                         continue
                     if not chunk:
                         break

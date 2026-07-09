@@ -57,6 +57,9 @@
           packages = with pkgs; [
             uv
             python312
+            ruff
+            mypy
+            pre-commit
             gobject-introspection
             pkg-config
             cairo
@@ -70,6 +73,11 @@
             export GI_TYPELIB_PATH="${pkgs.lib.makeSearchPath "lib/girepository-1.0" giTypelibs}:$GI_TYPELIB_PATH"
             export UV_PYTHON="${pkgs.python312}/bin/python3.12"
             export UV_PYTHON_DOWNLOADS=never
+
+            # Install git hooks (ruff + ruff-format + mypy on commit, pytest on push).
+            if [ -d .git ] && [ ! -f .git/hooks/pre-push ]; then
+              pre-commit install --install-hooks || true
+            fi
           '';
         };
       });

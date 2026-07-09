@@ -91,9 +91,7 @@ class EyeDetector:
         self._start = time.monotonic()
 
     @staticmethod
-    def _build_landmarker(
-        model_path: Path, *, prefer_gpu: bool
-    ) -> mp_vision.FaceLandmarker:
+    def _build_landmarker(model_path: Path, *, prefer_gpu: bool) -> mp_vision.FaceLandmarker:
         # MediaPipe's GPU delegate uses TFLite over OpenGL ES via EGL, which
         # fails to initialise on headless boxes, in containers without EGL
         # libs, and on platforms MediaPipe doesn't ship GPU support for
@@ -104,14 +102,15 @@ class EyeDetector:
                 landmarker = mp_vision.FaceLandmarker.create_from_options(
                     _make_options(model_path, mp_python.BaseOptions.Delegate.GPU)
                 )
-                log.info("FaceLandmarker initialised with GPU delegate")
-                return landmarker
             except Exception as exc:
                 log.warning(
                     "GPU delegate unavailable (%s: %s); falling back to CPU",
                     type(exc).__name__,
                     exc,
                 )
+            else:
+                log.info("FaceLandmarker initialised with GPU delegate")
+                return landmarker
 
         landmarker = mp_vision.FaceLandmarker.create_from_options(
             _make_options(model_path, mp_python.BaseOptions.Delegate.CPU)

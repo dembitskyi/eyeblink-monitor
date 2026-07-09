@@ -18,10 +18,15 @@ Signals:
 # property/signal type hints at decoration time and cannot resolve them when
 # they are stringified by PEP 563.
 
+import contextlib
+import logging
+
 from dasbus.connection import SessionMessageBus
 from dasbus.loop import EventLoop
 from dasbus.server.interface import dbus_interface, dbus_signal
 from dasbus.typing import Bool, Double, UInt32
+
+log = logging.getLogger("eyeblink")
 
 
 @dbus_interface("org.eyeblink.Monitor1")
@@ -86,25 +91,118 @@ class MonitorInterface:
 
 
 class DBusService:
-    """Owns the GLib event loop on a background thread and exposes the interface."""
+    """Owns the GLib event loop on a background thread and exposes the interface.
 
-    def __init__(self, bus_name: str, object_path: str, warning_threshold: int) -> None:
+    Publishes two objects under the same bus name: the legacy read-only monitor
+    interface (``org.eyeblink.Monitor1``) and, when a ``RuntimeSettings`` is
+    supplied, the generic ``org.os_settings.Configurable1`` tuning interface.
+    """
+
+    def __init__(
+        self,
+        bus_name: str,
+        object_path: str,
+        warning_threshold: int,
+        runtime=None,
+        config=None,
+    ) -> None:
         self._bus_name = bus_name
         self._object_path = object_path
         self._bus = SessionMessageBus()
         self.interface = MonitorInterface(warning_threshold)
+        self.configurable = None
+        self._runtime = runtime
+        self._configurable_iface = "org.os_settings.Configurable1"
+        self._last_status: dict = {}
+        if runtime is not None:
+            # Imported lazily so a build without the settings module still runs.
+            from dbus_settings import CONFIGURABLE_OBJECT_PATH, ConfigurableInterface
+
+            self.configurable = ConfigurableInterface(runtime, config)
+            self._configurable_path = CONFIGURABLE_OBJECT_PATH
         self._loop = EventLoop()
 
     def publish(self) -> None:
         self._bus.publish_object(self._object_path, self.interface)
+        if self.configurable is not None:
+            self._bus.publish_object(self._configurable_path, self.configurable)
         self._bus.register_service(self._bus_name)
+        if self._runtime is not None:
+            # Emit a PropertiesChanged as soon as a tunable is written...
+            self._runtime.set_notifier(self._on_settings_changed)
+            # ...and a coalesced one for live status at ~2 Hz (once a loop runs).
+            from gi.repository import GLib
+
+            GLib.timeout_add(500, self._emit_status_tick)
+
+    # ── PropertiesChanged emission ──────────────────────────────────────────
+    def _on_settings_changed(self, keys: list) -> None:
+        """Notifier target: emit the standard signal for changed tunables.
+
+        Runs on the GLib loop thread (D-Bus dispatches Set there), so it is safe
+        to emit on the bus connection directly.
+        """
+        self._emit_changed(keys)
+
+    def _emit_status_tick(self) -> bool:
+        from settings import STATUS_KEYS
+
+        # Live status streaming is opt-in (it changes ~30x/s); the settings
+        # PropertiesChanged for tunables is always emitted regardless.
+        if not self._runtime.get("status_reporting"):
+            return True  # keep polling the flag so it resumes when enabled.
+        changed = [
+            key for key in STATUS_KEYS if self._last_status.get(key) != self._runtime.get(key)
+        ]
+        if changed:
+            for key in changed:
+                self._last_status[key] = self._runtime.get(key)
+            self._emit_changed(changed)
+        return True  # keep the timer running.
+
+    def _emit_changed(self, keys: list) -> None:
+        from gi.repository import GLib
+
+        from settings import DBUS_SIGNATURE, SCHEMA_BY_KEY, _camel
+
+        changed: dict = {}
+        for key in keys:
+            spec = SCHEMA_BY_KEY.get(key)
+            if spec is None:
+                continue
+            signature = DBUS_SIGNATURE.get(spec.type)
+            if signature is None:
+                continue
+            value = _coerce_for_signature(signature, self._runtime.get(key))
+            changed[_camel(key)] = GLib.Variant(signature, value)
+        if not changed:
+            return
+        body = GLib.Variant("(sa{sv}as)", (self._configurable_iface, changed, []))
+        try:
+            self._bus.connection.emit_signal(
+                None,
+                self._configurable_path,
+                "org.freedesktop.DBus.Properties",
+                "PropertiesChanged",
+                body,
+            )
+        except Exception:
+            log.exception("emit PropertiesChanged")
 
     def run(self) -> None:
         self._loop.run()
 
     def quit(self) -> None:
         self._loop.quit()
-        try:
+        with contextlib.suppress(Exception):
             self._bus.disconnect()
-        except Exception:
-            pass
+
+
+def _coerce_for_signature(signature: str, value) -> object:
+    if signature == "b":
+        return bool(value)
+    if signature == "i":
+        return int(value)
+    if signature == "d":
+        return float(value)
+    return str(value)

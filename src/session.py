@@ -7,6 +7,7 @@ signals on /org/noctalia/Session when the screen is locked/unlocked.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 log = logging.getLogger("eyeblink")
 
@@ -16,8 +17,8 @@ class SessionLockListener:
 
     def __init__(
         self,
-        on_lock: callable,
-        on_unlock: callable,
+        on_lock: Callable[[], None],
+        on_unlock: Callable[[], None],
     ) -> None:
         self._on_lock = on_lock
         self._on_unlock = on_unlock

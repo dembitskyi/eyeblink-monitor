@@ -4,6 +4,18 @@ let
   cfg = config.programs.eyeblink-monitor;
   settingsFormat = pkgs.formats.toml { };
   settingsFile = settingsFormat.generate "eyeblink-monitor.toml" cfg.settings;
+
+  busName = cfg.settings.dbus.bus_name or "org.eyeblink.Monitor";
+  # Discovery manifest consumed by os-settings: identity + where to find the
+  # org.os_settings.Configurable1 object. Dropping this file into the XDG data
+  # dir is what makes the module appear (as a tab) in os-settings.
+  moduleManifest = builtins.toJSON {
+    id = "eyeblink";
+    title = "Eye Blink Monitor";
+    icon = "eye";
+    bus_name = busName;
+    object_path = "/org/os_settings/eyeblink";
+  };
 in
 {
   options.programs.eyeblink-monitor = {
@@ -48,6 +60,9 @@ in
     xdg.configFile."eyeblink-monitor/config.toml" = lib.mkIf (cfg.settings != { }) {
       source = settingsFile;
     };
+
+    # Register with os-settings so it shows up as a tunable module.
+    xdg.dataFile."os-settings/modules/eyeblink.json".text = moduleManifest;
 
     systemd.user.services.eyeblink-monitor = {
       Unit = {

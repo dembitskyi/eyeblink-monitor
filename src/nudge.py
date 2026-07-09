@@ -81,10 +81,13 @@ class NudgeController:
         if self._scope == "all":
             self._shader_path = Path(tempfile.mkdtemp()) / "eyeblink-dim.frag"
         elif self._scope == "focused":
-            self._hypr_listener = HyprEventListener(
-                lambda: GLib.idle_add(self._on_focus_change)
-            )
+            self._hypr_listener = HyprEventListener(lambda: GLib.idle_add(self._on_focus_change))
             self._hypr_listener.start()
+
+    def update_params(self, target_dim: float, fade_ms: int) -> None:
+        """Apply new dim level / fade duration live (used by the tuning UI)."""
+        self._target = max(0.0, min(1.0, target_dim))
+        self._fade_ms = max(1, fade_ms)
 
     def activate(self, level: float | None = None) -> None:
         target = max(0.0, min(1.0, level)) if level is not None else self._target
@@ -119,9 +122,13 @@ class NudgeController:
     def _request_stepped_fade(self, to: float) -> bool:
         if abs(self._fade_to - to) < 0.001 and self._fade_timer is not None:
             return False
-        if to < 0.001 and self._current_level < 0.001 and self._fade_timer is None:
-            if not self._shader_active:
-                return False
+        if (
+            to < 0.001
+            and self._current_level < 0.001
+            and self._fade_timer is None
+            and not self._shader_active
+        ):
+            return False
         self._start_stepped_fade(to)
         return False
 
@@ -176,12 +183,14 @@ class NudgeController:
         self._shader_active = True
 
     def _write_shader_atomic(self, shader_src: str) -> None:
+        # Only reached in "all" scope, where _shader_path is always set.
+        assert self._shader_path is not None
         tmp_path = self._shader_path.with_name(self._shader_path.name + ".tmp")
         with tmp_path.open("w", encoding="utf-8") as fh:
             fh.write(shader_src)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp_path, self._shader_path)
+        tmp_path.replace(self._shader_path)
 
     # ----------------------------------------------------- focused mode (animated)
 
