@@ -68,3 +68,37 @@ def test_schema_dict_is_camelcase(tmp_path: Path) -> None:
     assert set(keys) == {_camel(spec.key) for spec in SETTINGS_SCHEMA}
     # Serialisable (Describe returns JSON).
     json.dumps(schema)
+
+
+def test_adaptive_rate_setting(tmp_path: Path) -> None:
+    rt = _runtime(tmp_path)
+    assert rt.get("adaptive_rate") is True
+    assert rt.set("adaptive_rate", False) is False
+
+
+def test_frames_to_skip() -> None:
+    from monitor import IDLE_AFTER_S, IDLE_SKIP, frames_to_skip
+
+    # Eyes clearly open: every other frame only with the adaptive rate.
+    assert frames_to_skip(True, 0.30, 0.21, True, 0.0) == 1
+    assert frames_to_skip(True, 0.30, 0.21, False, 0.0) == 0
+    # Near or below the threshold: every frame.
+    assert frames_to_skip(True, 0.24, 0.21, True, 0.0) == 0
+    assert frames_to_skip(True, 0.15, 0.21, True, 0.0) == 0
+    # No face: every frame at first, then the idle rate.
+    assert frames_to_skip(False, 0.0, 0.21, True, 1.0) == 0
+    assert frames_to_skip(False, 0.0, 0.21, False, IDLE_AFTER_S) == IDLE_SKIP
+
+
+def test_blink_needs_consecutive_frames() -> None:
+    from monitor import BlinkMonitor
+
+    mon = BlinkMonitor(0.21, 2, 10)
+    assert not mon.update(True, 0.15)[0]
+    assert not mon.update(True, 0.30)[0]  # One closed frame: noise.
+    mon.update(True, 0.15)
+    mon.update(True, 0.15)
+    assert mon.update(True, 0.30)[0]
+    mon.configure(0.21, 1, 10)
+    mon.update(True, 0.15)
+    assert mon.update(True, 0.30)[0]

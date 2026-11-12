@@ -5,6 +5,23 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
+# No face for this long: process one frame in IDLE_SKIP + 1.
+IDLE_AFTER_S = 3.0
+IDLE_SKIP = 5
+# Adaptive rate: every frame once EAR drops below threshold x NEAR_BLINK.
+NEAR_BLINK = 1.2
+
+
+def frames_to_skip(
+    face_detected: bool, ear: float, threshold: float, adaptive: bool, faceless_s: float
+) -> int:
+    """Camera frames to dequeue without processing after this one."""
+    if not face_detected:
+        return IDLE_SKIP if faceless_s >= IDLE_AFTER_S else 0
+    if adaptive and ear >= threshold * NEAR_BLINK:
+        return 1
+    return 0
+
 
 @dataclass
 class MonitorState:
@@ -24,15 +41,20 @@ class BlinkMonitor:
         consecutive_frames: int,
         warning_seconds: int,
     ) -> None:
-        self._threshold = ear_threshold
-        self._required_frames = max(1, consecutive_frames)
-        self._warning_seconds = warning_seconds
+        self.configure(ear_threshold, consecutive_frames, warning_seconds)
 
         self._closed_frames = 0
         self._last_blink_ts = time.monotonic()
         self._warning_active = False
 
         self.state = MonitorState()
+
+    def configure(
+        self, ear_threshold: float, consecutive_frames: int, warning_seconds: int
+    ) -> None:
+        self._threshold = ear_threshold
+        self._required_frames = max(1, int(consecutive_frames))
+        self._warning_seconds = warning_seconds
 
     def update(self, face_detected: bool, ear: float) -> tuple[bool, bool, bool]:
         """Feed a new frame.

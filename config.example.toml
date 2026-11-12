@@ -18,7 +18,15 @@ fps = 30
 # Try the MediaPipe GPU delegate (TFLite over OpenGL ES via EGL). If GPU init
 # fails — no NVIDIA/EGL drivers, headless session, unsupported platform such
 # as aarch64 Linux — the detector logs a warning and falls back to CPU.
+# With several GPUs, EGL picks one; to force e.g. NVIDIA, set in the service
+# environment: __EGL_VENDOR_LIBRARY_FILENAMES=<nvidia>/share/glvnd/egl_vendor.d/10_nvidia.json
+# and EGL_PLATFORM=surfaceless (the detector needs no window system).
 prefer_gpu = true
+
+# Check every other camera frame while the eyes are clearly open and every
+# frame near a blink (EAR below 1.2 x ear_threshold). Roughly halves the CPU and
+# GPU work; live-tunable as "Adaptive frame rate".
+adaptive_rate = true
 
 [alert]
 # Seconds without a blink before NoBlinkWarning is emitted.

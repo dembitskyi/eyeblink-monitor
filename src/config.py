@@ -16,6 +16,8 @@ class DetectionConfig:
     fps: int = 30
     # Try the MediaPipe GPU delegate first; fall back to CPU if unavailable.
     prefer_gpu: bool = True
+    # Every other frame while the eyes are clearly open, every frame near a blink.
+    adaptive_rate: bool = True
 
 
 @dataclass

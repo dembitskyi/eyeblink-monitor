@@ -18,6 +18,8 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+# NVIDIA's GL driver busy-waits for the GPU by default; sleep instead.
+os.environ.setdefault("__GL_YIELD", "USLEEP")
 
 import argparse
 import logging
@@ -35,7 +37,7 @@ from config import Config, load_config
 from dbus_service import DBusService
 from detector import EyeDetector
 from hypr import HyprEventListener
-from monitor import BlinkMonitor
+from monitor import BlinkMonitor, frames_to_skip
 from nudge import NudgeController
 from session import SessionLockListener
 from settings import RuntimeSettings
@@ -188,6 +190,16 @@ def _draw_overlay(
             cv2.circle(frame_bgr, (int(x), int(y)), 2, (255, 255, 0), -1)
 
 
+def _open_camera(index: int, fps: int) -> cv2.VideoCapture:
+    # V4L2 directly (OpenCV tries GStreamer first) at a fixed raw format.
+    cap = cv2.VideoCapture(index, cv2.CAP_V4L2)
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc(*"YUYV"))
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FPS, fps)
+    return cap
+
+
 def _capture_loop(
     cfg: Config,
     rt: RuntimeSettings,
@@ -200,12 +212,11 @@ def _capture_loop(
     from gi.repository import GLib
 
     s = rt.snapshot()
-    cap = cv2.VideoCapture(s["camera_index"])
+    cap = _open_camera(s["camera_index"], cfg.detection.fps)
     if not cap.isOpened():
         log.error("cannot open camera index %d", s["camera_index"])
         stop_flag.set()
         return
-    cap.set(cv2.CAP_PROP_FPS, cfg.detection.fps)
     log.info("camera %d opened", s["camera_index"])
 
     detector = EyeDetector(prefer_gpu=cfg.detection.prefer_gpu)
@@ -220,6 +231,8 @@ def _capture_loop(
     camera_paused = False
     camera_gen = rt.camera_generation
     nudge_gen = rt.nudge_generation
+    skip = 0
+    last_face = time.monotonic()
 
     def _rebuild_nudge(scope: str, target_dim: float, fade_ms: int) -> bool:
         # Runs on the GLib main thread so timer/source teardown is safe.
@@ -254,11 +267,12 @@ def _capture_loop(
             if camera_paused and not paused_now:
                 log.info("monitoring resumed, reopening camera")
                 time.sleep(1.0)
-                cap = cv2.VideoCapture(s["camera_index"])
-                cap.set(cv2.CAP_PROP_FPS, cfg.detection.fps)
+                cap = _open_camera(s["camera_index"], cfg.detection.fps)
                 monitor.reset_timer()
                 camera_paused = False
                 fail_count = 0
+                skip = 0
+                last_face = time.monotonic()
                 camera_gen = rt.camera_generation
                 if not cap.isOpened():
                     log.warning("camera reopen failed, retrying in 2s")
@@ -281,21 +295,23 @@ def _capture_loop(
                 current_escalation_idx = -1
                 cap.release()
                 time.sleep(0.3)
-                cap = cv2.VideoCapture(s["camera_index"])
-                cap.set(cv2.CAP_PROP_FPS, cfg.detection.fps)
+                cap = _open_camera(s["camera_index"], cfg.detection.fps)
                 monitor.reset_timer()
+                skip = 0
                 if not cap.isOpened():
                     log.warning("camera %d reopen failed, retrying", s["camera_index"])
                     time.sleep(1.0)
                 continue
 
-            # Apply live detection tunables to the monitor.
-            monitor._threshold = s["ear_threshold"]
-            monitor._required_frames = max(1, int(s["consecutive_frames"]))
-            monitor._warning_seconds = s["warning_seconds"]
+            monitor.configure(s["ear_threshold"], s["consecutive_frames"], s["warning_seconds"])
             nudge.update_params(s["target_dim"], s["fade_ms"])
 
-            ok, frame_bgr = cap.read()
+            # A skipped frame is only dequeued (no colour conversion, no inference).
+            if skip:
+                skip -= 1
+                ok, frame_bgr = cap.grab(), None
+            else:
+                ok, frame_bgr = cap.read()
             if not ok:
                 fail_count += 1
                 if fail_count == 1:
@@ -308,8 +324,7 @@ def _capture_loop(
                     log.info("camera unresponsive (%d failures), reopening", fail_count)
                     cap.release()
                     time.sleep(2.0)
-                    cap = cv2.VideoCapture(s["camera_index"])
-                    cap.set(cv2.CAP_PROP_FPS, cfg.detection.fps)
+                    cap = _open_camera(s["camera_index"], cfg.detection.fps)
                     fail_count = 0
                     if cap.isOpened():
                         log.info("camera reopened successfully")
@@ -317,12 +332,24 @@ def _capture_loop(
                         log.warning("camera reopen failed, retrying in 2s")
                 continue
             fail_count = 0
+            if frame_bgr is None:
+                continue
 
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
             result = detector.process(frame_rgb)
 
             blinked, warning_started, warning_cleared = monitor.update(
                 result.face_detected, result.ear
+            )
+            now = time.monotonic()
+            if result.face_detected:
+                last_face = now
+            skip = frames_to_skip(
+                result.face_detected,
+                result.ear,
+                s["ear_threshold"],
+                bool(s["adaptive_rate"]),
+                now - last_face,
             )
 
             iface = service.interface

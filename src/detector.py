@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import os
 import time
@@ -13,6 +14,7 @@ import mediapipe as mp
 import numpy as np
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
+from mediapipe.tasks.python.vision import face_landmarker as mp_face_landmarker
 
 log = logging.getLogger("eyeblink.detector")
 
@@ -20,6 +22,7 @@ log = logging.getLogger("eyeblink.detector")
 # Index ordering: [outer corner, top-1, top-2, inner corner, bottom-2, bottom-1].
 LEFT_EYE_EAR_IDX = (33, 160, 158, 133, 153, 144)
 RIGHT_EYE_EAR_IDX = (362, 385, 387, 263, 373, 380)
+EYE_IDX = LEFT_EYE_EAR_IDX + RIGHT_EYE_EAR_IDX
 
 MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
@@ -89,6 +92,10 @@ class EyeDetector:
         path = model_path or _ensure_model()
         self._landmarker = self._build_landmarker(path, prefer_gpu=prefer_gpu)
         self._start = time.monotonic()
+        self._last_ts = -1
+        # mediapipe's ctypes wrapper (0.10.3x) builds Python objects for all 478
+        # landmarks per frame; reading its C result directly takes only the 12.
+        self._c_api = hasattr(self._landmarker, "_lib")
 
     @staticmethod
     def _build_landmarker(model_path: Path, *, prefer_gpu: bool) -> mp_vision.FaceLandmarker:
@@ -124,22 +131,36 @@ class EyeDetector:
     def process(self, frame_rgb: np.ndarray) -> DetectionResult:
         h, w, _ = frame_rgb.shape
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-        # VIDEO mode requires monotonically increasing timestamps in ms.
-        ts_ms = int((time.monotonic() - self._start) * 1000)
-        result = self._landmarker.detect_for_video(mp_image, ts_ms)
-
-        if not result.face_landmarks:
+        # VIDEO mode requires strictly increasing timestamps in ms.
+        ts_ms = max(self._last_ts + 1, int((time.monotonic() - self._start) * 1000))
+        self._last_ts = ts_ms
+        pts = self._eye_points(mp_image, ts_ms)
+        if pts is None:
             return DetectionResult(False, 0.0, None, None)
 
-        landmarks = result.face_landmarks[0]
-
-        def gather(indices: tuple[int, ...]) -> np.ndarray:
-            return np.array(
-                [(landmarks[i].x * w, landmarks[i].y * h) for i in indices],
-                dtype=np.float32,
-            )
-
-        left = gather(LEFT_EYE_EAR_IDX)
-        right = gather(RIGHT_EYE_EAR_IDX)
+        pts *= (w, h)
+        left, right = pts[:6], pts[6:]
         ear = (_eye_aspect_ratio(left) + _eye_aspect_ratio(right)) / 2.0
         return DetectionResult(True, ear, left, right)
+
+    def _eye_points(self, image: mp.Image, ts_ms: int) -> np.ndarray | None:
+        """Normalised (x, y) of the EYE_IDX landmarks, or None without a face."""
+        if not self._c_api:
+            result = self._landmarker.detect_for_video(image, ts_ms)
+            if not result.face_landmarks:
+                return None
+            marks = result.face_landmarks[0]
+            return np.array([(marks[i].x, marks[i].y) for i in EYE_IDX], dtype=np.float32)
+
+        lm = self._landmarker
+        result_c = mp_face_landmarker.FaceLandmarkerResultC()
+        lm._lib.MpFaceLandmarkerDetectForVideo(
+            lm._handle, image._image_ptr, None, ts_ms, ctypes.byref(result_c)
+        )
+        try:
+            if not result_c.face_landmarks_count:
+                return None
+            marks = result_c.face_landmarks[0].landmarks
+            return np.array([(marks[i].x, marks[i].y) for i in EYE_IDX], dtype=np.float32)
+        finally:
+            lm._lib.MpFaceLandmarkerCloseResult(ctypes.byref(result_c))

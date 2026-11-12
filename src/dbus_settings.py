@@ -79,6 +79,14 @@ class ConfigurableInterface:
         self._rt.set("consecutive_frames", int(value))
 
     @property
+    def AdaptiveRate(self) -> Bool:
+        return bool(self._rt.get("adaptive_rate"))
+
+    @AdaptiveRate.setter
+    def AdaptiveRate(self, value: Bool) -> None:
+        self._rt.set("adaptive_rate", bool(value))
+
+    @property
     def CameraIndex(self) -> Int32:
         return int(self._rt.get("camera_index"))
 

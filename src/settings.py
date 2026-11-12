@@ -120,6 +120,14 @@ SETTINGS_SCHEMA: tuple[SettingSpec, ...] = (
         unit="frames",
     ),
     SettingSpec(
+        key="adaptive_rate",
+        label="Adaptive frame rate",
+        type="bool",
+        group="Blink detection",
+        description="Check every other camera frame while the eyes are clearly open and "
+        "every frame near a blink. Roughly halves the CPU and GPU work.",
+    ),
+    SettingSpec(
         key="camera_index",
         label="Camera index",
         type="int",
@@ -306,20 +314,7 @@ class RuntimeSettings:
         rt = cls()
         if prefs_path is not None:
             rt._prefs_path = prefs_path
-        rt._values = {
-            "paused": False,
-            "warning_seconds": int(cfg.alert.warning_seconds),
-            "ear_threshold": float(cfg.detection.ear_threshold),
-            "consecutive_frames": int(cfg.detection.consecutive_frames),
-            "camera_index": int(cfg.detection.camera_index),
-            "dim_enabled": True,
-            "scope": cfg.nudge.scope,
-            "target_dim": float(cfg.nudge.target_dim),
-            "fade_ms": int(cfg.nudge.fade_ms),
-            "escalation_seconds": _first_escalation_seconds(cfg),
-            "escalation_dim": _first_escalation_dim(cfg),
-            "status_reporting": False,
-        }
+        rt._values = cls.from_config_defaults_only(cfg)
         rt._status = {
             "face_detected": False,
             "current_ear": 0.0,
@@ -397,6 +392,7 @@ class RuntimeSettings:
             "warning_seconds": int(cfg.alert.warning_seconds),
             "ear_threshold": float(cfg.detection.ear_threshold),
             "consecutive_frames": int(cfg.detection.consecutive_frames),
+            "adaptive_rate": bool(cfg.detection.adaptive_rate),
             "camera_index": int(cfg.detection.camera_index),
             "dim_enabled": True,
             "scope": cfg.nudge.scope,
